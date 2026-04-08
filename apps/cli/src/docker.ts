@@ -209,7 +209,11 @@ export function spawnWorker(opts: WorkerOptions): ChildProcess {
 
   // UID remapping for Linux bind mounts
   if (os.platform() === 'linux' && process.getuid && process.getgid) {
-    args.push('-e', `SHANNON_HOST_UID=${process.getuid()}`, '-e', `SHANNON_HOST_GID=${process.getgid()}`);
+    const hostUid = process.getuid();
+    const hostGid = process.getgid();
+    if (hostUid !== 0 && hostGid !== 0) {
+      args.push('-e', `SHANNON_HOST_UID=${hostUid}`, '-e', `SHANNON_HOST_GID=${hostGid}`);
+    }
   }
 
   // Volume mounts
