@@ -37,6 +37,11 @@ interface SessionJsonForStartup {
   };
 }
 
+function ensureWritableDirectory(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true });
+  fs.chmodSync(dirPath, 0o777);
+}
+
 function readWorkflowIdFromStartupFiles(
   sessionJsonPath: string,
   startupSignalPath: string,
@@ -83,8 +88,7 @@ export async function start(args: StartArgs): Promise<void> {
 
   // 4. Ensure workspaces dir is writable by container user (UID 1001)
   const workspacesDir = getWorkspacesDir();
-  fs.mkdirSync(workspacesDir, { recursive: true });
-  fs.chmodSync(workspacesDir, 0o777);
+  ensureWritableDirectory(workspacesDir);
 
   // 5. Handle router env
   if (useRouter) {
@@ -107,10 +111,9 @@ export async function start(args: StartArgs): Promise<void> {
 
   // 9. Create writable overlay directories (mounted over :ro repo paths inside container)
   const workspacePath = path.join(workspacesDir, workspace);
-  for (const dir of ['deliverables', 'scratchpad', '.playwright-cli']) {
-    const dirPath = path.join(workspacePath, dir);
-    fs.mkdirSync(dirPath, { recursive: true });
-    fs.chmodSync(dirPath, 0o777);
+  ensureWritableDirectory(workspacePath);
+  for (const dir of ['agents', 'prompts', 'deliverables', 'scratchpad', '.playwright-cli']) {
+    ensureWritableDirectory(path.join(workspacePath, dir));
   }
 
   // 10. Pre-create overlay mount points (Linux :ro mounts can't auto-create them)

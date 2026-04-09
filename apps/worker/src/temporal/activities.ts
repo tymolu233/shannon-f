@@ -269,8 +269,9 @@ export async function runPreflightValidation(input: ActivityInput): Promise<void
   try {
     const logger = createActivityLogger();
     logger.info('Running preflight validation...', { attempt: attemptNumber });
+    const sessionMetadata = buildSessionMetadata(input);
 
-    const result = await runPreflightChecks(input.webUrl, input.repoPath, input.configPath, logger);
+    const result = await runPreflightChecks(input.webUrl, input.repoPath, input.configPath, sessionMetadata, logger);
 
     if (isErr(result)) {
       const classified = classifyErrorForTemporal(result.error);

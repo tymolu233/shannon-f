@@ -22,11 +22,14 @@ import { lookup } from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
+import path from 'node:path';
 import type { SDKAssistantMessageError } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveModel } from '../ai/models.js';
+import { generateAuditPath } from '../audit/utils.js';
 import { parseConfig } from '../config-parser.js';
 import type { ActivityLogger } from '../types/activity-logger.js';
+import type { SessionMetadata } from '../types/audit.js';
 import { ErrorCode } from '../types/errors.js';
 import { err, ok, type Result } from '../types/result.js';
 import { isRetryableError, PentestError } from './error-handling.js';
@@ -440,6 +443,35 @@ async function validateTargetUrl(targetUrl: string, logger: ActivityLogger): Pro
   }
 }
 
+async function validateWorkspaceWritable(
+  sessionMetadata: SessionMetadata,
+  logger: ActivityLogger,
+): Promise<Result<void, PentestError>> {
+  const auditPath = generateAuditPath(sessionMetadata);
+  const validationPath = path.join(auditPath, '.workspace-write-test');
+
+  logger.info('Checking workspace writability...', { auditPath });
+
+  try {
+    await fs.mkdir(auditPath, { recursive: true });
+    await fs.writeFile(validationPath, 'ok', 'utf8');
+    await fs.unlink(validationPath);
+    logger.info('Workspace path OK');
+    return ok(undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return err(
+      new PentestError(
+        `Workspace path is not writable: ${auditPath}. Check Docker bind mount permissions for the Shannon workspace directory. ${message}`,
+        'filesystem',
+        false,
+        { auditPath },
+        ErrorCode.CONFIG_VALIDATION_FAILED,
+      ),
+    );
+  }
+}
+
 // === Preflight Orchestrator ===
 
 /**
@@ -456,6 +488,7 @@ export async function runPreflightChecks(
   targetUrl: string,
   repoPath: string,
   configPath: string | undefined,
+  sessionMetadata: SessionMetadata,
   logger: ActivityLogger,
 ): Promise<Result<void, PentestError>> {
   // 1. Repository check (free — filesystem only)
@@ -482,6 +515,11 @@ export async function runPreflightChecks(
   const urlResult = await validateTargetUrl(targetUrl, logger);
   if (!urlResult.ok) {
     return urlResult;
+  }
+
+  const workspaceResult = await validateWorkspaceWritable(sessionMetadata, logger);
+  if (!workspaceResult.ok) {
+    return workspaceResult;
   }
 
   logger.info('All preflight checks passed');
