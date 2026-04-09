@@ -26,6 +26,44 @@ export interface StartArgs {
   version: string;
 }
 
+interface StartupSignal {
+  workflowId?: string;
+}
+
+interface SessionJsonForStartup {
+  session?: {
+    originalWorkflowId?: string;
+    resumeAttempts?: Array<{ workflowId?: string }>;
+  };
+}
+
+function readWorkflowIdFromStartupFiles(
+  sessionJsonPath: string,
+  startupSignalPath: string,
+  isResume: boolean,
+  initialResumeCount: number,
+): string | null {
+  try {
+    const startupSignal = JSON.parse(fs.readFileSync(startupSignalPath, 'utf-8')) as StartupSignal;
+    if (startupSignal.workflowId) {
+      return startupSignal.workflowId;
+    }
+  } catch {}
+
+  try {
+    const session = JSON.parse(fs.readFileSync(sessionJsonPath, 'utf-8')) as SessionJsonForStartup;
+    const resumeAttempts = session.session?.resumeAttempts ?? [];
+    const latestResumeWorkflowId = resumeAttempts.at(-1)?.workflowId;
+    const ready = isResume ? resumeAttempts.length > initialResumeCount : !!session.session?.originalWorkflowId;
+
+    if (ready) {
+      return latestResumeWorkflowId ?? session.session?.originalWorkflowId ?? null;
+    }
+  } catch {}
+
+  return null;
+}
+
 export async function start(args: StartArgs): Promise<void> {
   // 1. Initialize state directories and load env
   initHome();
@@ -125,6 +163,7 @@ export async function start(args: StartArgs): Promise<void> {
 
   // Detect whether this is a fresh workspace or a resume by checking session.json existence
   const sessionJson = path.join(workspacesDir, workspace, 'session.json');
+  const startupSignal = path.join(workspacesDir, workspace, 'workflow-started.json');
   const isResume = fs.existsSync(sessionJson);
   let initialResumeCount = 0;
   if (isResume) {
@@ -136,7 +175,6 @@ export async function start(args: StartArgs): Promise<void> {
     }
   }
 
-  // Poll for workflow to register in session.json
   process.stdout.write('Waiting for workflow to start...');
   let workflowId = '';
   let started = false;
@@ -150,27 +188,17 @@ export async function start(args: StartArgs): Promise<void> {
       process.exit(1);
     }
 
-    try {
-      const session = JSON.parse(fs.readFileSync(sessionJson, 'utf-8'));
-      const resumeAttempts: { workflowId: string }[] = session.session?.resumeAttempts ?? [];
+    const detectedWorkflowId = readWorkflowIdFromStartupFiles(sessionJson, startupSignal, isResume, initialResumeCount);
 
-      // Fresh: session.json appears with originalWorkflowId. Resume: new resumeAttempts entry.
-      const ready = isResume ? resumeAttempts.length > initialResumeCount : !!session.session?.originalWorkflowId;
+    if (detectedWorkflowId) {
+      clearInterval(pollInterval);
+      started = true;
+      workflowId = detectedWorkflowId;
 
-      if (ready) {
-        clearInterval(pollInterval);
-        started = true;
-
-        // Latest workflow ID: last resume attempt, or originalWorkflowId for fresh scans
-        workflowId = resumeAttempts.at(-1)?.workflowId ?? session.session?.originalWorkflowId ?? '';
-
-        // Clear waiting line and show info
-        process.stdout.write('\r\x1b[K');
-        printInfo(args, useRouter, workspace, workflowId, repo.hostPath, workspacesDir);
-        return;
-      }
-    } catch {
-      // File doesn't exist yet
+      // Clear waiting line and show info
+      process.stdout.write('\r\x1b[K');
+      printInfo(args, useRouter, workspace, workflowId, repo.hostPath, workspacesDir);
+      return;
     }
     process.stdout.write('.');
   }, 2000);

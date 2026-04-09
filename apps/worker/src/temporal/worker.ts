@@ -35,6 +35,7 @@ import { bundleWorkflowCode, NativeConnection, Worker } from '@temporalio/worker
 import dotenv from 'dotenv';
 import { sanitizeHostname } from '../audit/utils.js';
 import { parseConfig } from '../config-parser.js';
+import { WORKSPACES_DIR } from '../paths.js';
 import type { PipelineConfig } from '../types/config.js';
 import { fileExists, readJson } from '../utils/file-io.js';
 import * as activities from './activities.js';
@@ -169,8 +170,37 @@ interface WorkspaceResolution {
   terminatedWorkflows: string[];
 }
 
+interface StartupSignal {
+  workflowId: string;
+  sessionId: string;
+  isResume: boolean;
+  timestamp: string;
+}
+
+function getWorkspaceDir(sessionId: string): string {
+  return path.join(WORKSPACES_DIR, sessionId);
+}
+
+function getStartupSignalPath(sessionId: string): string {
+  return path.join(getWorkspaceDir(sessionId), 'workflow-started.json');
+}
+
+function writeStartupSignal(workspace: WorkspaceResolution): void {
+  const workspaceDir = getWorkspaceDir(workspace.sessionId);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+
+  const startupSignal: StartupSignal = {
+    workflowId: workspace.workflowId,
+    sessionId: workspace.sessionId,
+    isResume: workspace.isResume,
+    timestamp: new Date().toISOString(),
+  };
+
+  fs.writeFileSync(getStartupSignalPath(workspace.sessionId), JSON.stringify(startupSignal, null, 2), 'utf-8');
+}
+
 async function terminateExistingWorkflows(client: Client, workspaceName: string): Promise<string[]> {
-  const sessionPath = path.join('./workspaces', workspaceName, 'session.json');
+  const sessionPath = path.join(getWorkspaceDir(workspaceName), 'session.json');
 
   if (!(await fileExists(sessionPath))) {
     throw new Error(`Workspace not found: ${workspaceName}\n` + `Expected path: ${sessionPath}`);
@@ -223,7 +253,7 @@ async function resolveWorkspace(client: Client, args: CliArgs): Promise<Workspac
   }
 
   const workspace = args.resumeFromWorkspace;
-  const sessionPath = path.join('./workspaces', workspace, 'session.json');
+  const sessionPath = path.join(getWorkspaceDir(workspace), 'session.json');
   const workspaceExists = await fileExists(sessionPath);
 
   if (workspaceExists) {
@@ -343,7 +373,7 @@ async function waitForWorkflowResult(
 
       if (workspace.isResume) {
         try {
-          const session = await readJson<SessionJson>(path.join('./workspaces', workspace.sessionId, 'session.json'));
+          const session = await readJson<SessionJson>(path.join(getWorkspaceDir(workspace.sessionId), 'session.json'));
           console.log(`Cumulative cost: $${session.metrics.total_cost_usd.toFixed(4)}`);
         } catch {
           // Non-fatal
@@ -432,15 +462,14 @@ async function run(): Promise<void> {
       },
     );
 
-    // 7. Wait for workflow result
+    writeStartupSignal(workspace);
+
     await waitForWorkflowResult(handle, workspace);
 
-    // 8. Copy deliverables to output directory
     if (args.outputPath) {
       copyDeliverables(args.repoPath, args.outputPath);
     }
 
-    // 9. Shut down worker gracefully
     worker.shutdown();
     await workerDone;
   } finally {
